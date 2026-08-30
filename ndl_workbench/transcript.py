@@ -1,0 +1,339 @@
+"""Turn NDL's fulltext OCR into a per-frame transcription plus translation chunks.
+
+This is the Python port of scripts/ndl_fulltext_pull.ps1, including the
+piecewise page map that script grew for volumes whose numbering restarts or is
+interrupted by unnumbered plates.
+
+Two things this module deliberately does NOT do:
+
+  * It does not read the scans. NDL has already run production OCR; we pass it
+    through and label it as uncorrected machine output, because that is what it
+    is. The geta mark 〓 stays exactly where NDL put it.
+
+  * It does not silently trust the page mapping. A single linear fit is wrong
+    for any volume with an inserted plate section or a restarting appendix, so
+    the fit reports its own worst deviation and the caller can override it.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+BOM = "﻿"
+
+_TOC_LINE = re.compile(r"^(.*?)(?:/(\d+))?\s*\((\d+)\.jp2\)\s*$")
+
+_KANJI_DIGIT = {"〇": 0, "一": 1, "二": 2, "三": 3, "四": 4,
+                "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+# --------------------------------------------------------------------------
+# table-of-contents anchors
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class TocAnchor:
+    section: str
+    printed_page: Optional[int]
+    frame: int
+
+
+def toc_anchors(book: dict[str, Any]) -> list[TocAnchor]:
+    out: list[TocAnchor] = []
+    for entry in book.get("index") or []:
+        m = _TOC_LINE.match(str(entry))
+        if not m:
+            continue
+        out.append(
+            TocAnchor(
+                section=m.group(1).strip(),
+                printed_page=int(m.group(2)) if m.group(2) else None,
+                frame=int(m.group(3)),
+            )
+        )
+    return out
+
+
+# --------------------------------------------------------------------------
+# page mapping
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class PageMap:
+    """frame -> printed page(s).
+
+    `segments` is a list of (start_frame, offset|None) sorted by frame, where a
+    page is 2*frame + offset and None marks an unnumbered stretch (plates).
+    Frames before the first segment are front matter.
+    """
+
+    segments: list[tuple[int, Optional[int]]]
+    source: str            # how it was derived, for the file header
+    max_deviation: Optional[int] = None
+    slope: int = 2         # 2 = one frame is a two-page spread, 1 = single page
+
+    @property
+    def is_estimated(self) -> bool:
+        return self.source.startswith("fit")
+
+    def label(self, frame: int) -> str:
+        """The PRINTED: line for one frame.
+
+        Wording matches scripts/ndl_fulltext_pull.ps1 exactly, so the packaged
+        app and the PowerShell script produce interchangeable transcriptions.
+        """
+        seg: Optional[tuple[int, Optional[int]]] = None
+        for s in self.segments:
+            if frame >= s[0]:
+                seg = s
+        if seg is None:
+            return "front matter (before printed page 1)"
+        if seg[1] is None:
+            return "unnumbered plates / insert (no printed folio)"
+        p = self.slope * frame + seg[1]
+        if self.is_estimated:
+            if self.slope == 2:
+                return f"printed pages ~{p}-{p + 1} (estimated)"
+            return f"printed page ~{p} (estimated)"
+        if p < 1:
+            return f"printed page {p + 1} (from page map)"
+        return f"printed pages {p}-{p + 1} (from page map)"
+
+    def describe(self) -> str:
+        parts = []
+        for start, off in self.segments:
+            if off is None:
+                parts.append(f"frame {start}+: unnumbered plates")
+            else:
+                parts.append(f"frame {start}+: page = 2*frame + {off}")
+        s = "; ".join(parts) if parts else "unknown"
+        if self.is_estimated and self.max_deviation is not None:
+            s += f" (fitted from TOC anchors, max deviation {self.max_deviation} - VERIFY against the scan)"
+        elif not self.is_estimated:
+            s += " (hand-specified page map)"
+        return s
+
+
+def parse_page_map(spec: str) -> PageMap:
+    """Parse "27:-54;38:?;52:-70;173:-345" into a PageMap."""
+    segments: list[tuple[int, Optional[int]]] = []
+    for part in (spec or "").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        bits = part.split(":")
+        if len(bits) != 2:
+            raise ValueError(f"page-map segment {part!r} is not startFrame:offset")
+        frame = int(bits[0].strip())
+        off_s = bits[1].strip()
+        segments.append((frame, None if off_s == "?" else int(off_s)))
+    segments.sort(key=lambda s: s[0])
+    return PageMap(segments, source="manual")
+
+
+def fit_page_map(anchors: Iterable[TocAnchor]) -> PageMap:
+    """The original single-line fit: page = slope*frame + offset.
+
+    Kept because it is right for a plainly-printed volume, and because its
+    deviation is the signal that tells the user to write a real map instead.
+    """
+    a = sorted([x for x in anchors if x.printed_page is not None], key=lambda x: x.frame)
+    if len(a) < 2:
+        return PageMap([], source="fit/none")
+
+    rates = []
+    for prev, cur in zip(a, a[1:]):
+        df = cur.frame - prev.frame
+        if df > 0:
+            rates.append((cur.printed_page - prev.printed_page) / df)  # type: ignore[operator]
+    if not rates:
+        return PageMap([], source="fit/none")
+    rates.sort()
+    median_rate = rates[(len(rates) - 1) // 2]
+    slope = 2 if abs(median_rate - 2) <= abs(median_rate - 1) else 1
+
+    offsets = sorted(x.printed_page - slope * x.frame for x in a)  # type: ignore[operator]
+    offset = offsets[(len(offsets) - 1) // 2]
+    max_dev = max(abs(x.printed_page - (slope * x.frame + offset)) for x in a)  # type: ignore[operator]
+
+    first = a[0].frame
+    if slope == 2:
+        # Express as the standard 2*frame + off form used by manual maps: the
+        # spread holds pages (p, p+1), so the stored offset is one less than
+        # the fit's, which named the higher page.
+        return PageMap([(first, offset - 1)], source="fit/spread",
+                       max_deviation=int(max_dev), slope=2)
+    return PageMap([(first, offset)], source="fit/single",
+                   max_deviation=int(max_dev), slope=1)
+
+
+# --------------------------------------------------------------------------
+# printed-folio verification
+# --------------------------------------------------------------------------
+
+
+def _kanji_number(s: str) -> Optional[int]:
+    if not s or not re.fullmatch(r"[〇一二三四五六七八九十百]+", s):
+        return None
+    total = cur = 0
+    for ch in s:
+        if ch in _KANJI_DIGIT:
+            cur = _KANJI_DIGIT[ch]
+        elif ch == "十":
+            total += (cur or 1) * 10
+            cur = 0
+        elif ch == "百":
+            total += (cur or 1) * 100
+            cur = 0
+    return total + cur
+
+
+def verify_page_map(fulltext: dict[str, Any], pmap: PageMap, *, floor: int = 20) -> tuple[int, int, list[int]]:
+    """Check the map against printed folios the OCR actually caught.
+
+    Returns (confirmed, unconfirmed, unconfirmed_frames). Only standalone kanji
+    numerals at or above `floor` are considered, because low numbers are list
+    item markers, not folios.
+    """
+    confirmed = 0
+    unconfirmed: list[int] = []
+    for entry in sorted(fulltext.get("list", []), key=lambda e: e.get("page", 0)):
+        frame = int(entry.get("page", 0))
+        label = pmap.label(frame)
+        m = re.search(r"printed pages? (\d+)(?:-(\d+))?", label)
+        if not m:
+            continue
+        expected = {int(m.group(1))}
+        if m.group(2):
+            expected.add(int(m.group(2)))
+        found = set()
+        for line in _frame_lines(entry):
+            v = _kanji_number(line.strip())
+            if v is not None and floor <= v <= 400:
+                found.add(v)
+        if not found:
+            continue
+        if found & expected:
+            confirmed += 1
+        else:
+            unconfirmed.append(frame)
+    return confirmed, len(unconfirmed), unconfirmed
+
+
+# --------------------------------------------------------------------------
+# transcription
+# --------------------------------------------------------------------------
+
+
+def _frame_lines(entry: dict[str, Any]) -> list[str]:
+    """The text lines of one frame, rebuilt from NDL's per-line coordinates.
+
+    An empty coordinate array is a real answer - a blank leaf - and stays empty.
+    The "no OCR text" placeholder is only for a frame NDL returned no coordinate
+    data for at all, which is what the PowerShell script does; keeping the two
+    identical means either tool can produce a given volume's transcription.
+    """
+    coord = entry.get("coordjson")
+    if not coord or coord == "null":
+        contents = entry.get("contents")
+        if contents and str(contents).strip():
+            return [str(contents)]
+        return ["(no OCR text on this frame)"]
+    try:
+        return [str(l.get("contenttext", "")) for l in json.loads(coord)]
+    except (ValueError, AttributeError):
+        return []
+
+
+@dataclass
+class BuildResult:
+    transcription_path: Path
+    chunk_paths: list[Path]
+    frames: int
+    title: str
+    published: str
+    page_map: PageMap
+
+
+def build_transcription(
+    pid: str,
+    book: dict[str, Any],
+    fulltext: dict[str, Any],
+    out_dir: Path,
+    *,
+    page_map: Optional[PageMap] = None,
+    frames_per_chunk: int = 15,
+    retrieved: str = "",
+) -> BuildResult:
+    """Write <pid>_transcription_ja.txt plus chunks/ for translation."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    anchors = toc_anchors(book)
+    pmap = page_map or fit_page_map(anchors)
+
+    title = str(book.get("title") or f"NDL pid {pid}")
+    volume = str(book.get("volume") or "")
+    published = str(book.get("published") or "")
+    publisher = str(book.get("publisher") or "")
+
+    head = [
+        "=" * 78,
+        f"{title} {volume}".strip() + " - transcription from NDL's own OCR (uncorrected machine output)",
+        f"Source      : NDL Digital Collections pid {pid} - https://dl.ndl.go.jp/pid/{pid}",
+        f"Published   : {published} - publisher {publisher}",
+        f"Text source : https://lab.ndl.go.jp/dl/api/book/fulltext-json/{pid}",
+        "Attribution : National Diet Library. Unreadable glyphs appear as the geta mark.",
+        f"Page mapping: {pmap.describe()}",
+        f"Retrieved   : {retrieved}",
+        "=" * 78,
+        "",
+    ]
+
+    blocks: list[str] = []
+    for entry in sorted(fulltext.get("list", []), key=lambda e: e.get("page", 0)):
+        frame = int(entry.get("page", 0))
+        b = [
+            f"=== Frame {frame} ===",
+            f"URL: https://dl.ndl.go.jp/pid/{pid}/1/{frame}",
+            f"PRINTED: {pmap.label(frame)}",
+        ]
+        for t in (x for x in anchors if x.frame == frame):
+            note = f" - printed page {t.printed_page}" if t.printed_page is not None else ""
+            b.append(f"[TOC: {t.section}{note}]")
+        b.extend(_frame_lines(entry))
+        b.append("")
+        blocks.append("\n".join(b) + "\n")
+
+    transcription = out_dir / f"{pid}_transcription_ja.txt"
+    transcription.write_text(BOM + "\n".join(head) + "".join(blocks), encoding="utf-8")
+
+    chunk_dir = out_dir / "chunks"
+    chunk_dir.mkdir(exist_ok=True)
+    for old in chunk_dir.glob("chunk_*.txt"):
+        old.unlink()
+    chunk_paths: list[Path] = []
+    for i in range(0, len(blocks), frames_per_chunk):
+        n = i // frames_per_chunk + 1
+        p = chunk_dir / f"chunk_{n:02d}.txt"
+        p.write_text(BOM + "".join(blocks[i:i + frames_per_chunk]), encoding="utf-8")
+        chunk_paths.append(p)
+
+    return BuildResult(
+        transcription_path=transcription,
+        chunk_paths=chunk_paths,
+        frames=len(blocks),
+        title=f"{title} {volume}".strip(),
+        published=published,
+        page_map=pmap,
+    )
+
+
+def slugify(title: str) -> str:
+    """A short ASCII tail for the output directory, or '' when there is none."""
+    ascii_bits = re.findall(r"[A-Za-z0-9]+", title)
+    return "-".join(ascii_bits)[:40].lower().strip("-")

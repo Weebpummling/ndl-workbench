@@ -1,0 +1,8 @@
+# Desktop app dependencies. Deliberately small: tkinter and urllib ship with
+# Python, so the packaged binary only needs a DOCX writer and, for the optional
+# translation step, the Anthropic SDK.
+python-docx>=1.1
+anthropic>=1.0
+
+# Build-time only.
+pyinstaller>=6.6

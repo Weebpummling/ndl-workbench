@@ -1,0 +1,7 @@
+# Build products and the private build environment. The binaries are large and
+# reproducible from build.ps1; there is no reason to version them.
+.venv/
+build/
+dist/
+__pycache__/
+*.pyc
