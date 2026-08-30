@@ -337,3 +337,92 @@ def slugify(title: str) -> str:
     """A short ASCII tail for the output directory, or '' when there is none."""
     ascii_bits = re.findall(r"[A-Za-z0-9]+", title)
     return "-".join(ascii_bits)[:40].lower().strip("-")
+
+
+# --------------------------------------------------------------------------
+# paste-sized pieces, for the free web translators
+# --------------------------------------------------------------------------
+
+_STRIP_PREFIXES = ("URL:", "PRINTED:", "[TOC:", "SOURCE FILE:")
+
+
+def build_paste_pieces(
+    transcription: Path,
+    out_dir: Path,
+    *,
+    max_chars: int = 4000,
+) -> list[Path]:
+    """Split a transcription into pieces small enough to paste into a web form.
+
+    The free translators all cap how much text one box will take, and the cap
+    differs between services and moves over time, so the size is the caller's
+    choice rather than a constant baked in here.
+
+    Provenance lines (frame URL, printed-page label, TOC anchors) are dropped:
+    they are wasted characters in a character-limited box, and the frame marker
+    that survives is enough to line the English back up with the Japanese. A
+    frame is never split across two pieces unless it exceeds the cap on its own.
+    """
+    text = transcription.read_text(encoding="utf-8-sig")
+    blocks = re.split(r"(?m)^=== Frame (\d+) ===$", text)
+
+    # re.split with one capture group yields [preamble, num, body, num, body...]
+    frames: list[tuple[str, list[str]]] = []
+    for i in range(1, len(blocks), 2):
+        number = blocks[i]
+        body = [
+            line for line in blocks[i + 1].splitlines()
+            if line.strip() and not line.startswith(_STRIP_PREFIXES)
+        ]
+        frames.append((number, body))
+
+    pieces: list[str] = []
+    current: list[str] = []
+    size = 0
+
+    def flush() -> None:
+        nonlocal current, size
+        if current:
+            pieces.append("\n".join(current).strip() + "\n")
+            current = []
+            size = 0
+
+    for number, body in frames:
+        marker = f"--- Frame {number} ---"
+        lines = [marker] + body
+        length = sum(len(l) + 1 for l in lines)
+
+        if length > max_chars:
+            # One oversized frame: flush what is pending, then break the frame
+            # across pieces, repeating the marker so each piece says where it
+            # belongs.
+            flush()
+            part = [marker]
+            part_len = len(marker) + 1
+            for line in body:
+                if part_len + len(line) + 1 > max_chars and len(part) > 1:
+                    pieces.append("\n".join(part).strip() + "\n")
+                    part = [marker + " (continued)"]
+                    part_len = len(part[0]) + 1
+                part.append(line)
+                part_len += len(line) + 1
+            if len(part) > 1:
+                pieces.append("\n".join(part).strip() + "\n")
+            continue
+
+        if size + length > max_chars:
+            flush()
+        current.extend(lines)
+        size += length
+
+    flush()
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("piece_*.txt"):
+        old.unlink()
+    paths: list[Path] = []
+    for n, piece in enumerate(pieces, start=1):
+        path = out_dir / f"piece_{n:02d}.txt"
+        path.write_text(piece, encoding="utf-8")
+        paths.append(path)
+    return paths

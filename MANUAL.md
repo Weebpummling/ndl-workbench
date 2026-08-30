@@ -115,9 +115,46 @@ invent a plausible sentence. Expect `[illegible]` where NDL's OCR emitted 〓, a
 tables, dense advertisement pages and heavily ruby-annotated letterpress are the
 weakest spots. For citation, check the frame URL against the scan.
 
-**No key, or no network?** The chunk files are plain UTF-8 and keep their frame
-headers. Translate them however you like, concatenate the results into one
-markdown file, and use **Render DOCX from markdown…**.
+### No API key? Use the free web translators
+
+The **Free translators** tab does the same job by hand, for nothing. The only
+real obstacle is that every free service caps how much text one box will take,
+and a volume is far past that cap — so the app cuts the transcription into
+pieces that fit and feeds them to you one at a time.
+
+1. Fetch a volume in the Library tab and leave it selected.
+2. Go to **Free translators** → **Prepare pieces from selected volume**. They
+   land in `paste\piece_01.txt`, `piece_02.txt`, … inside the volume folder.
+3. **Copy to clipboard**, then click one of the service buttons to open it in
+   your browser, and paste.
+4. Paste the English into a text file of your own. **Copy and next** advances
+   and copies in one click, which is the loop you actually repeat.
+5. When the volume is done, save your English as one `.md` file and use
+   **Render DOCX from markdown…** in the Library tab.
+
+| Service | |
+|---|---|
+| [DeepL](https://www.deepl.com/translator#ja/en/) | usually the best Japanese → English of the free tier |
+| [Google Translate](https://translate.google.com/?sl=ja&tl=en&op=translate) | most generous with volume |
+| [Papago](https://papago.naver.com/?sk=ja&tk=en) | Naver; strong on Japanese |
+| [Bing Translator](https://www.bing.com/translator/?from=ja&to=en) | |
+| [Yandex Translate](https://translate.yandex.com/?source_lang=ja&target_lang=en) | |
+
+The buttons open each service pre-set to Japanese → English where the link
+supports it.
+
+**Two things to know.** The pieces keep `--- Frame N ---` markers and drop the
+URL and printed-page lines — the markers survive translation and are what let
+you line the English back up with the Japanese, while the provenance lines would
+just eat into your character budget. And these are other companies' services:
+what you paste goes to them, under their terms and their limits. Public-domain
+NDL material is unproblematic; material you are not free to share is not.
+
+If a service rejects a paste as too long, lower **characters per piece** and
+prepare again. 4,000 is a reasonable starting point.
+
+Nothing stops you using the raw `chunks\` files with some other tool instead —
+they are plain UTF-8 with their full frame headers intact.
 
 ---
 

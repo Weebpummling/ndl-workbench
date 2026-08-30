@@ -31,6 +31,18 @@ from .translate import (TranslationUnavailable, header_markdown,
                         translate_chunks)
 
 
+# Free web translators, deep-linked to Japanese -> English where the service
+# takes it in a query string. If a service changes its parameters the link still
+# lands on the translator, which is the part that matters.
+SERVICES: list[tuple[str, str]] = [
+    ("DeepL", "https://www.deepl.com/translator#ja/en/"),
+    ("Google Translate", "https://translate.google.com/?sl=ja&tl=en&op=translate"),
+    ("Papago", "https://papago.naver.com/?sk=ja&tk=en"),
+    ("Bing Translator", "https://www.bing.com/translator/?from=ja&to=en"),
+    ("Yandex Translate", "https://translate.yandex.com/?source_lang=ja&target_lang=en"),
+]
+
+
 def resource_path(name: str) -> Path:
     """Find a bundled data file, whether frozen by PyInstaller or run from source."""
     base = getattr(sys, "_MEIPASS", None)
@@ -64,6 +76,7 @@ class Workbench(Tk):
         self.hits: list[ndl.SearchHit] = []
         self.current_pid: str | None = None
         self.current_dir: Path | None = None
+        self.piece_paths: list[Path] = []
 
         self._build_search_bar()
         self._build_tabs()
@@ -99,6 +112,7 @@ class Workbench(Tk):
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill=BOTH, expand=True, padx=10, pady=4)
         self._tab_library()
+        self._tab_free_translators()
         self._tab_local_ocr()
         self._tab_settings()
         self._tab_manual()
@@ -148,6 +162,64 @@ class Workbench(Tk):
         ttk.Button(btns, text="View at NDL", command=self.on_open_viewer).pack(side=LEFT)
         self.btn_cancel = ttk.Button(btns, text="Cancel", command=self.on_cancel, state="disabled")
         self.btn_cancel.pack(side=RIGHT)
+
+    def _tab_free_translators(self) -> None:
+        tab = ttk.Frame(self.nb, padding=8)
+        self.nb.add(tab, text="Free translators")
+
+        ttk.Label(
+            tab, wraplength=1040, justify=LEFT,
+            text=("Step 2 in the Library tab needs a paid API key. If you do not have one, "
+                  "the free web translators will do the job by hand — the only real obstacle "
+                  "is that each of them caps how much text you can paste at once, and a "
+                  "volume is far past that cap.\n\n"
+                  "So: pick a volume in the Library tab, fetch it, then prepare paste-sized "
+                  "pieces here. Copy a piece, paste it into whichever service you like, paste "
+                  "the English into a text file, and when the whole volume is done save it as "
+                  "markdown and use \"Render DOCX from markdown…\" in the Library tab. The "
+                  "--- Frame N --- markers survive translation and are what let you line the "
+                  "English back up with the Japanese."),
+        ).pack(anchor="w", pady=(0, 8))
+
+        svc = ttk.LabelFrame(tab, text="Open a translator", padding=8)
+        svc.pack(fill=X)
+        row = ttk.Frame(svc)
+        row.pack(fill=X)
+        for label, url in SERVICES:
+            ttk.Button(row, text=label, width=18,
+                       command=lambda u=url: webbrowser.open(u)).pack(side=LEFT, padx=(0, 6))
+        ttk.Label(
+            svc, foreground="#555", wraplength=1020, justify=LEFT,
+            text=("These open in your browser, pre-set to Japanese → English where the service "
+                  "supports it in a link. They are other companies' services: what you paste "
+                  "goes to them, and each sets its own limits and terms. Public-domain NDL "
+                  "material is unproblematic; anything you are not free to share is not."),
+        ).pack(anchor="w", pady=(8, 0))
+
+        prep = ttk.LabelFrame(tab, text="Paste-sized pieces", padding=8)
+        prep.pack(fill=X, pady=(10, 0))
+        r1 = ttk.Frame(prep)
+        r1.pack(fill=X)
+        ttk.Button(r1, text="Prepare pieces from selected volume",
+                   command=self.on_prepare_pieces).pack(side=LEFT)
+        ttk.Label(r1, text="  characters per piece:").pack(side=LEFT)
+        self.piece_size = StringVar(value="4000")
+        ttk.Entry(r1, textvariable=self.piece_size, width=7).pack(side=LEFT)
+        ttk.Label(r1, foreground="#555",
+                  text="  (lower it if a service rejects the paste)").pack(side=LEFT)
+
+        r2 = ttk.Frame(prep)
+        r2.pack(fill=X, pady=(8, 0))
+        ttk.Label(r2, text="Piece:").pack(side=LEFT)
+        self.piece_choice = StringVar()
+        self.piece_box = ttk.Combobox(r2, textvariable=self.piece_choice,
+                                      state="readonly", width=16, values=[])
+        self.piece_box.pack(side=LEFT, padx=6)
+        ttk.Button(r2, text="Copy to clipboard", command=self.on_copy_piece).pack(side=LEFT)
+        ttk.Button(r2, text="Copy and next", command=self.on_copy_next).pack(side=LEFT, padx=6)
+        ttk.Button(r2, text="Open pieces folder", command=self.on_open_pieces).pack(side=LEFT)
+        self.piece_status = StringVar(value="No pieces prepared yet.")
+        ttk.Label(prep, textvariable=self.piece_status, foreground="#555").pack(anchor="w", pady=(8, 0))
 
     def _tab_local_ocr(self) -> None:
         tab = ttk.Frame(self.nb, padding=8)
@@ -246,6 +318,8 @@ class Workbench(Tk):
                     self.progress.configure(maximum=max(total, 1), value=done)
                 elif kind == "hits":
                     self._show_hits(payload)  # type: ignore[arg-type]
+                elif kind == "pieces":
+                    self._show_pieces(payload)  # type: ignore[arg-type]
                 elif kind == "done":
                     self._set_busy(False)
                 elif kind == "error":
@@ -456,8 +530,11 @@ class Workbench(Tk):
             )
         except TranslationUnavailable as e:
             self.log("translation unavailable: " + str(e))
-            self.log(f"the chunk files are in {out / 'chunks'} and can be translated elsewhere, "
-                     f"then rendered with 'Render DOCX from markdown…'.")
+            self.log("→ open the 'Free translators' tab: it cuts this volume into paste-sized "
+                     "pieces and copies them one at a time into DeepL, Google Translate and the "
+                     "rest, no key needed.")
+            self.log(f"the raw chunk files are in {out / 'chunks'} if you would rather use "
+                     f"another tool, then render with 'Render DOCX from markdown…'.")
             raise
 
         self.log(f"translated {res.chunks_done}/{len(chunks)} chunk(s); "
@@ -541,6 +618,90 @@ class Workbench(Tk):
             text_dir, out, label=name, source_note=str(text_dir),
             frames_per_chunk=self.settings.frames_per_chunk, log=self.log)
         self.log(f"wrote {transcription} and {len(chunks)} chunk file(s)")
+
+    # ------------------------------------------------------ free translators
+
+    def _paste_dir(self, hit: ndl.SearchHit) -> Path:
+        return self._volume_dir(hit) / "paste"
+
+    def on_prepare_pieces(self) -> None:
+        hit = self._selected_hit()
+        if not hit:
+            messagebox.showinfo(APP_NAME, "Select a volume in the Library tab first.")
+            return
+        out = self._volume_dir(hit)
+        candidates = sorted(out.glob("*_transcription_ja.txt")) + sorted(out.glob("local_transcription_ja.txt"))
+        if not candidates:
+            messagebox.showinfo(APP_NAME, "No transcription yet — run step 1 in the Library tab first.")
+            return
+        try:
+            size = max(500, int(self.piece_size.get()))
+        except ValueError:
+            messagebox.showerror(APP_NAME, "Characters per piece must be a number.")
+            return
+        self._run(self._prepare_pieces, candidates[0], self._paste_dir(hit), size)
+
+    def _prepare_pieces(self, transcription: Path, out_dir: Path, size: int) -> None:
+        paths = transcript.build_paste_pieces(transcription, out_dir, max_chars=size)
+        self.piece_paths = paths
+        self.msgq.put(("pieces", paths))
+        self.log(f"{len(paths)} piece(s) of up to {size} characters in {out_dir}")
+        self.log("Copy a piece, paste it into a translator, keep the --- Frame N --- markers "
+                 "in your English so the two stay lined up.")
+
+    def _show_pieces(self, paths: list[Path]) -> None:
+        names = [p.name for p in paths]
+        self.piece_box.configure(values=names)
+        if names:
+            self.piece_choice.set(names[0])
+        self.piece_status.set(
+            f"{len(names)} piece(s) ready. Copy one, translate it, paste the English into your own file."
+            if names else "No pieces prepared yet."
+        )
+        self.nb.select(1)
+
+    def _current_piece(self) -> Path | None:
+        name = self.piece_choice.get()
+        for p in self.piece_paths:
+            if p.name == name:
+                return p
+        return None
+
+    def _copy_piece(self, path: Path) -> None:
+        text = path.read_text(encoding="utf-8")
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update()  # make the clipboard survive this window losing focus
+        self.piece_status.set(f"{path.name} copied — {len(text)} characters. Paste it into a translator.")
+        self.log(f"copied {path.name} ({len(text)} characters) to the clipboard")
+
+    def on_copy_piece(self) -> None:
+        path = self._current_piece()
+        if not path:
+            messagebox.showinfo(APP_NAME, "Prepare the pieces first.")
+            return
+        self._copy_piece(path)
+
+    def on_copy_next(self) -> None:
+        """Copy the piece after the current one - the loop you actually repeat."""
+        if not self.piece_paths:
+            messagebox.showinfo(APP_NAME, "Prepare the pieces first.")
+            return
+        names = [p.name for p in self.piece_paths]
+        try:
+            i = names.index(self.piece_choice.get())
+        except ValueError:
+            i = -1
+        if i + 1 >= len(names):
+            self.piece_status.set("That was the last piece.")
+            return
+        self.piece_choice.set(names[i + 1])
+        self._copy_piece(self.piece_paths[i + 1])
+
+    def on_open_pieces(self) -> None:
+        hit = self._selected_hit()
+        if hit:
+            open_in_explorer(self._paste_dir(hit))
 
     # -------------------------------------------------------------- settings
 

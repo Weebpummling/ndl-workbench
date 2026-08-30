@@ -60,6 +60,33 @@ def _selftest() -> int:
     print("OK" if not bad2 else f"FAILED on frames {bad2}")
     ok = ok and not bad2
 
+    print("paste pieces     : ", end="", flush=True)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "t_transcription_ja.txt"
+            frames = []
+            for n in range(1, 21):
+                frames.append(
+                    f"=== Frame {n} ===\n"
+                    f"URL: https://dl.ndl.go.jp/pid/1/1/{n}\n"
+                    f"PRINTED: printed pages {n}-{n + 1}\n"
+                    + ("軍人ハ忠節ヲ盡スヲ本分トスベシ\n" * 12)
+                )
+            src.write_text("header\n\n" + "\n".join(frames), encoding="utf-8")
+            pieces = transcript.build_paste_pieces(src, Path(td) / "paste", max_chars=1200)
+            texts = [p.read_text(encoding="utf-8") for p in pieces]
+            over = [p.name for p, t in zip(pieces, texts) if len(t) > 1200]
+            covered = sum(t.count("--- Frame ") for t in texts)
+            leaked = sum(t.count(x) for t in texts for x in ("URL:", "PRINTED:"))
+        if over or covered < 20 or leaked:
+            print(f"FAILED (over cap {over}, frames {covered}/20, leaked {leaked})")
+            ok = False
+        else:
+            print(f"OK ({len(pieces)} pieces, 20/20 frames, none over cap)")
+    except Exception as e:
+        print(f"FAILED - {e}")
+        ok = False
+
     print("docx render      : ", end="", flush=True)
     try:
         with tempfile.TemporaryDirectory() as td:

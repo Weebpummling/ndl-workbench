@@ -96,9 +96,23 @@ so rather than paper over it: `[illegible]` where NDL's OCR emitted 〓, and
 `[OCR uncertain]` where the text will not support a confident reading. Fold-out
 tables and dense advertisement pages are the weakest spots.
 
-No key? The chunk files are plain UTF-8 with their frame headers intact.
-Translate them however you like, concatenate, and use **Render DOCX from
-markdown…**.
+### No key? Use the free web translators
+
+The **Free translators** tab does the same job by hand, for nothing. Every free
+service caps how much text one box will take, so the app cuts the transcription
+into pieces that fit and hands them to you one at a time: *Prepare pieces* →
+*Copy to clipboard* → paste into [DeepL](https://www.deepl.com/translator#ja/en/),
+[Google Translate](https://translate.google.com/?sl=ja&tl=en&op=translate),
+[Papago](https://papago.naver.com/?sk=ja&tk=en),
+[Bing](https://www.bing.com/translator/?from=ja&to=en) or
+[Yandex](https://translate.yandex.com/?source_lang=ja&target_lang=en) → paste the
+English into your own file. *Copy and next* advances and copies in one click.
+
+The pieces keep their `--- Frame N ---` markers, so the English lines back up
+with the Japanese; save the finished result as markdown and use **Render DOCX
+from markdown…**. These are other companies' services and what you paste goes to
+them — fine for public-domain NDL material, not for anything you are not free to
+share.
 
 ## Restricted items
 
