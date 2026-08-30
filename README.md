@@ -24,14 +24,46 @@ For each volume, one folder:
 <data home>\manuals\ndl-<pid>-<slug>\
     ndl_book_raw.json              cached bibliographic record + TOC anchors
     ndl_fulltext_raw.json          cached OCR (fetched once, ever)
-    <pid>_transcription_ja.txt     the Japanese, frame by frame, with page labels
-    chunks\chunk_01.txt …          translation-sized pieces
+    <pid>_transcription_ja.txt     the Japanese, one line per OCR line (archival)
+    <pid>_reading_ja.txt           the same text, ruby stripped and sentences rejoined
+    chunks\chunk_01.txt …          translation-sized pieces, cut from the reading text
     <pid>_translation_en.md        the English
     <pid>_translation_en.docx      the readable deliverable
 ```
 
 The DOCX puts every frame under a Heading 2, so Word's navigation pane becomes a
 clickable frame index — the thing that makes a 100-page translation usable.
+
+### Why there are two Japanese files
+
+Because the shape that is faithful to the page and the shape a translator can
+read are not the same shape.
+
+`<pid>_transcription_ja.txt` mirrors the scan: one output line per line NDL
+detected, so line *n* here is line *n* on the page. Use it to check a reading
+against the image.
+
+`<pid>_reading_ja.txt` is the same words, reshaped for reading and for machine
+translation:
+
+- **Furigana removed.** NDL's OCR emits every ruby column as its own line,
+  interleaved with the body text. In one 1904 volume that is **65% of all text
+  lines** — paste the raw file into a translator and two thirds of what it reads
+  is disconnected katakana. Ruby is found from the line geometry NDL ships with
+  the text (a ruby column is markedly thinner than a body column), not by
+  guessing from the characters.
+- **Wrapped lines rejoined.** Each printed line is a column-width fragment, not
+  a sentence; fragments are joined and broken again at sentence-ending
+  punctuation and numbered items.
+
+No characters are altered — lines are dropped or joined, and what survives is
+exactly what NDL read. The chunks and the paste-sized pieces are cut from the
+reading text, which also makes the paid path cheaper: 199 KB against 370 KB for
+that same volume.
+
+Pages without sentence punctuation — plate captions, insignia charts,
+advertisements — still come out as runs of labels; there is nothing to break on.
+Prose pages come out clean.
 
 ## Install
 

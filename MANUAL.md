@@ -21,8 +21,9 @@ Everything for one volume lands in a single folder:
 <data home>\manuals\ndl-<pid>-<slug>\
     ndl_book_raw.json              cached bibliographic record + TOC anchors
     ndl_fulltext_raw.json          cached OCR (fetched once, ever)
-    <pid>_transcription_ja.txt     the Japanese, frame by frame
-    chunks\chunk_01.txt …          translation-sized pieces
+    <pid>_transcription_ja.txt     the Japanese, one line per OCR line (archival)
+    <pid>_reading_ja.txt           the same text, ruby stripped and sentences rejoined
+    chunks\chunk_01.txt …          translation-sized pieces, cut from the reading text
     <pid>_translation_en.md        the English
     <pid>_translation_en.docx      the readable deliverable
 ```
@@ -50,6 +51,48 @@ year and frame count; double-click a row to fetch it.
 
 A search that finds nothing is not proof the volume does not exist — it may be
 in NDL's collection but outside the public index. See §5.
+
+---
+
+## 2a. Two Japanese files, and which one you want
+
+Step 1 writes the volume's text twice, because the shape that is faithful to the
+page and the shape a translator can read are not the same shape.
+
+**`<pid>_transcription_ja.txt` — the archival record.** One output line per line
+NDL detected on the page, with the frame URL, printed-page label and any
+table-of-contents anchor above each frame. This is the file to use when checking
+a reading against the scan: line *n* here is line *n* on the page.
+
+**`<pid>_reading_ja.txt` — the reading text.** The same words, reshaped:
+
+- **Furigana removed.** These volumes are printed with ruby beside most kanji,
+  and NDL's OCR emits every ruby column as its own line, interleaved with the
+  body. In *Senji heisotsu kyōkasho* (pid 843085) that is **65% of all text
+  lines** — paste the raw file into a translator and two thirds of what it reads
+  is disconnected katakana. Ruby is identified from the line geometry NDL ships
+  with the text (a ruby column is markedly thinner than a body column), not by
+  guessing from the characters.
+- **Wrapped lines rejoined.** Every printed line is a column-width fragment, not
+  a sentence. Left alone, a translator renders each fragment as its own
+  utterance and the grammar collapses. Fragments are joined and broken again at
+  sentence-ending punctuation and at numbered items.
+
+No characters are altered by either step — lines are dropped or joined, and what
+survives is exactly what NDL read, geta marks included.
+
+The chunk files, and the paste-sized pieces in the Free translators tab, are cut
+from the **reading** text. That is also why translation costs less than it used
+to: the reading file for pid 843085 is 199 KB against 370 KB line-by-line.
+
+**Where it is weakest.** Pages with no sentence punctuation — plate captions,
+insignia charts, advertisement columns, tables of contents — come out as long
+runs of labels, because there is nothing to break on. Prose pages, which are the
+bulk of most volumes, come out clean. Consecutive headings set without full
+stops also arrive joined; line length is deliberately *not* used as a paragraph
+signal, because NDL splits one printed column into several boxes wherever ruby
+interrupts it, so a short box means "interrupted by furigana" rather than
+"paragraph ended".
 
 ---
 

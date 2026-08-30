@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -59,6 +60,40 @@ def _selftest() -> int:
     bad2 = [f for f, want in checks if want not in pm.label(f)]
     print("OK" if not bad2 else f"FAILED on frames {bad2}")
     ok = ok and not bad2
+
+    print("ruby / reflow    : ", end="", flush=True)
+    try:
+        from . import reflow
+
+        def col(text: str, x: int, thick: int, top: int = 0, length: int = 900):
+            return {"contenttext": text, "xmin": x, "xmax": x + thick,
+                    "ymin": top, "ymax": top + length}
+
+        # Two body columns (thick) each preceded by a ruby column (thin), as NDL
+        # emits them, with the sentence hard-wrapped across the two columns.
+        entry = {"coordjson": json.dumps([
+            col("グンジン", 1000, 50), col("軍人ハ忠節ヲ盡スヲ", 900, 110),
+            col("ホンブン", 800, 50), col("本分トスベシ。", 700, 110),
+            col("チウギ", 600, 50), col("忠義ノ心ヲ以テ", 500, 110),
+            col("ツク", 400, 50), col("務メヲ盡スベシ。", 300, 110),
+        ])}
+        paragraphs, body, ruby = reflow.frame_reading_text(entry)
+        joined = "".join(paragraphs)
+        problems = []
+        if ruby != 4:
+            problems.append(f"dropped {ruby} ruby lines, expected 4")
+        if body != 4:
+            problems.append(f"kept {body} body lines, expected 4")
+        if any(r in joined for r in ("グンジン", "ホンブン", "チウギ", "ツク")):
+            problems.append("ruby text leaked into the output")
+        if paragraphs != ["軍人ハ忠節ヲ盡スヲ本分トスベシ。", "忠義ノ心ヲ以テ務メヲ盡スベシ。"]:
+            problems.append(f"sentences not rejoined: {paragraphs}")
+        print("OK (ruby dropped, wrapped lines rejoined)" if not problems
+              else "FAILED - " + "; ".join(problems))
+        ok = ok and not problems
+    except Exception as e:
+        print(f"FAILED - {e}")
+        ok = False
 
     print("paste pieces     : ", end="", flush=True)
     try:
@@ -136,9 +171,19 @@ def _fetch(pid: str, page_map: str, chunk: int) -> int:
         page_map=transcript.parse_page_map(page_map) if page_map else None,
         frames_per_chunk=chunk,
         retrieved=_dt.date.today().isoformat(),
+        write_chunks=False,
     )
     print(f"{res.frames} frames -> {res.transcription_path}")
-    print(f"{len(res.chunk_paths)} chunks in {out / 'chunks'}")
+
+    reading, kept, dropped, chunks = transcript.build_reading_transcription(
+        pid, book, full, out,
+        page_map=res.page_map, retrieved=_dt.date.today().isoformat(),
+        frames_per_chunk=chunk, write_chunks=True,
+    )
+    share = (100.0 * dropped / (kept + dropped)) if (kept + dropped) else 0.0
+    print(f"reading text -> {reading}")
+    print(f"  {dropped} ruby lines removed ({share:.0f}%), {kept} body lines rejoined")
+    print(f"{len(chunks)} chunks in {out / 'chunks'} (cut from the reading text)")
     print("page mapping:", res.page_map.describe())
     confirmed, bad, _ = transcript.verify_page_map(full, res.page_map)
     print(f"page-map check: {confirmed} confirmed, {bad} unconfirmed")

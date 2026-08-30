@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from . import reflow
+
 BOM = "﻿"
 
 _TOC_LINE = re.compile(r"^(.*?)(?:/(\d+))?\s*\((\d+)\.jp2\)\s*$")
@@ -251,6 +253,19 @@ def _frame_lines(entry: dict[str, Any]) -> list[str]:
         return []
 
 
+def _write_chunks(blocks: list[str], chunk_dir: Path, frames_per_chunk: int) -> list[Path]:
+    """Cut the frame blocks into translation-sized chunk files."""
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    for old in chunk_dir.glob("chunk_*.txt"):
+        old.unlink()
+    paths: list[Path] = []
+    for i in range(0, len(blocks), frames_per_chunk):
+        p = chunk_dir / f"chunk_{i // frames_per_chunk + 1:02d}.txt"
+        p.write_text(BOM + "".join(blocks[i:i + frames_per_chunk]), encoding="utf-8")
+        paths.append(p)
+    return paths
+
+
 @dataclass
 class BuildResult:
     transcription_path: Path
@@ -270,8 +285,14 @@ def build_transcription(
     page_map: Optional[PageMap] = None,
     frames_per_chunk: int = 15,
     retrieved: str = "",
+    write_chunks: bool = True,
 ) -> BuildResult:
-    """Write <pid>_transcription_ja.txt plus chunks/ for translation."""
+    """Write <pid>_transcription_ja.txt, the faithful line-by-line record.
+
+    Set write_chunks=False when the caller is going to cut the chunks from the
+    reading text instead - that is the better input for a translator, and two
+    sets of chunk files in one folder would be a trap.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     anchors = toc_anchors(book)
     pmap = page_map or fit_page_map(anchors)
@@ -312,16 +333,8 @@ def build_transcription(
     transcription = out_dir / f"{pid}_transcription_ja.txt"
     transcription.write_text(BOM + "\n".join(head) + "".join(blocks), encoding="utf-8")
 
-    chunk_dir = out_dir / "chunks"
-    chunk_dir.mkdir(exist_ok=True)
-    for old in chunk_dir.glob("chunk_*.txt"):
-        old.unlink()
-    chunk_paths: list[Path] = []
-    for i in range(0, len(blocks), frames_per_chunk):
-        n = i // frames_per_chunk + 1
-        p = chunk_dir / f"chunk_{n:02d}.txt"
-        p.write_text(BOM + "".join(blocks[i:i + frames_per_chunk]), encoding="utf-8")
-        chunk_paths.append(p)
+    chunk_paths = (_write_chunks(blocks, out_dir / "chunks", frames_per_chunk)
+                   if write_chunks else [])
 
     return BuildResult(
         transcription_path=transcription,
@@ -337,6 +350,94 @@ def slugify(title: str) -> str:
     """A short ASCII tail for the output directory, or '' when there is none."""
     ascii_bits = re.findall(r"[A-Za-z0-9]+", title)
     return "-".join(ascii_bits)[:40].lower().strip("-")
+
+
+# --------------------------------------------------------------------------
+# reading text: the same volume, shaped for a translator
+# --------------------------------------------------------------------------
+
+
+def build_reading_transcription(
+    pid: str,
+    book: dict[str, Any],
+    fulltext: dict[str, Any],
+    out_dir: Path,
+    *,
+    page_map: Optional[PageMap] = None,
+    retrieved: str = "",
+    frames_per_chunk: int = 15,
+    write_chunks: bool = False,
+) -> tuple[Path, int, int, list[Path]]:
+    """Write <pid>_reading_ja.txt: ruby removed, wrapped lines rejoined.
+
+    A companion to the faithful transcription, not a replacement for it. The
+    transcription mirrors the page one OCR line at a time, which is what you
+    want when checking a reading against the scan. This is the same text shaped
+    for reading and for machine translation: furigana columns dropped, the
+    column-width fragments joined back into sentences.
+
+    Returns (path, body_lines_kept, ruby_lines_dropped, chunk_paths).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    anchors = toc_anchors(book)
+    pmap = page_map or fit_page_map(anchors)
+
+    title = str(book.get("title") or f"NDL pid {pid}")
+    volume = str(book.get("volume") or "")
+    published = str(book.get("published") or "")
+    publisher = str(book.get("publisher") or "")
+
+    blocks: list[str] = []
+    kept = dropped = 0
+    for entry in sorted(fulltext.get("list", []), key=lambda e: e.get("page", 0)):
+        frame = int(entry.get("page", 0))
+        paragraphs, body, ruby = reflow.frame_reading_text(entry)
+        kept += body
+        dropped += ruby
+
+        b = [
+            f"=== Frame {frame} ===",
+            f"URL: https://dl.ndl.go.jp/pid/{pid}/1/{frame}",
+            f"PRINTED: {pmap.label(frame)}",
+        ]
+        for t in (x for x in anchors if x.frame == frame):
+            note = f" - printed page {t.printed_page}" if t.printed_page is not None else ""
+            b.append(f"[TOC: {t.section}{note}]")
+        b.extend(paragraphs if paragraphs else ["(no OCR text on this frame)"])
+        b.append("")
+        blocks.append("\n".join(b) + "\n")
+
+    share = (100.0 * dropped / (kept + dropped)) if (kept + dropped) else 0.0
+    head = [
+        "=" * 78,
+        f"{title} {volume}".strip() + " - READING TEXT (derived; not the archival transcription)",
+        f"Source      : NDL Digital Collections pid {pid} - https://dl.ndl.go.jp/pid/{pid}",
+        f"Published   : {published} - publisher {publisher}",
+        f"Text source : https://lab.ndl.go.jp/dl/api/book/fulltext-json/{pid}",
+        "Attribution : National Diet Library. Unreadable glyphs appear as the geta mark.",
+        f"Page mapping: {pmap.describe()}",
+        f"Retrieved   : {retrieved}",
+        "-" * 78,
+        "Derived from the line-by-line transcription for reading and machine",
+        "translation:",
+        f"  - {dropped} furigana (ruby) lines removed, {share:.0f}% of all text lines. NDL's OCR",
+        "    emits each ruby column as its own line, interleaved with the body text;",
+        "    left in, they wreck any translation. Identified by column thickness,",
+        "    not by guessing from the characters.",
+        f"  - {kept} body lines rejoined into sentences. Each printed line is a",
+        "    column-width fragment, not a sentence.",
+        "No characters were altered. To check a reading against the scan, use the",
+        f"line-by-line file: {pid}_transcription_ja.txt",
+        "=" * 78,
+        "",
+    ]
+
+    path = out_dir / f"{pid}_reading_ja.txt"
+    path.write_text(BOM + "\n".join(head) + "".join(blocks), encoding="utf-8")
+
+    chunk_paths = (_write_chunks(blocks, out_dir / "chunks", frames_per_chunk)
+                   if write_chunks else [])
+    return path, kept, dropped, chunk_paths
 
 
 # --------------------------------------------------------------------------

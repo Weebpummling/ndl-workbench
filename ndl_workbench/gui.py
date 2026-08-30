@@ -460,9 +460,19 @@ class Workbench(Tk):
             hit.pid, book, full, out,
             page_map=pmap, frames_per_chunk=chunk_n,
             retrieved=_dt.date.today().isoformat(),
+            write_chunks=False,   # the chunks come from the reading text below
         )
-        self.log(f"{res.frames} frames → {res.transcription_path.name}")
-        self.log(f"{len(res.chunk_paths)} chunk file(s) in chunks/")
+        self.log(f"{res.frames} frames → {res.transcription_path.name} (line-by-line, archival)")
+
+        reading, kept, dropped, chunks = transcript.build_reading_transcription(
+            hit.pid, book, full, out,
+            page_map=res.page_map, retrieved=_dt.date.today().isoformat(),
+            frames_per_chunk=chunk_n, write_chunks=True,
+        )
+        share = (100.0 * dropped / (kept + dropped)) if (kept + dropped) else 0.0
+        self.log(f"{reading.name} (reading text): {dropped} ruby lines removed "
+                 f"({share:.0f}% of all text lines), {kept} body lines rejoined into sentences")
+        self.log(f"{len(chunks)} chunk file(s) in chunks/, cut from the reading text")
         self.log("page mapping: " + res.page_map.describe())
 
         if res.page_map.is_estimated and (res.page_map.max_deviation or 0) > 3:
@@ -630,7 +640,11 @@ class Workbench(Tk):
             messagebox.showinfo(APP_NAME, "Select a volume in the Library tab first.")
             return
         out = self._volume_dir(hit)
-        candidates = sorted(out.glob("*_transcription_ja.txt")) + sorted(out.glob("local_transcription_ja.txt"))
+        # The reading text first: ruby stripped and sentences rejoined is what a
+        # translator can actually use. Fall back to the line-by-line file, which
+        # is all the local-OCR path produces.
+        candidates = (sorted(out.glob("*_reading_ja.txt"))
+                      or sorted(out.glob("*_transcription_ja.txt")))
         if not candidates:
             messagebox.showinfo(APP_NAME, "No transcription yet — run step 1 in the Library tab first.")
             return
