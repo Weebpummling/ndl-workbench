@@ -593,7 +593,13 @@ class Workbench(Tk):
             self.log("Set the folder in Settings > NDLOCR-Lite folder once it is installed.")
             return
         self.log("NDLOCR-Lite:\n" + install.describe())
-        self.log("usable: " + ("yes" if install.usable else "no — no runnable entry point found"))
+        if install.usable:
+            self.log("usable: yes")
+            self.log("command preview: " + " ".join(
+                ocr_local.build_command(self.settings.ndlocr_cmd, install,
+                                        Path("<input>"), Path("<output>"))))
+        else:
+            self.log("usable: NO\n" + install.problem())
 
     def on_run_ocr(self) -> None:
         src = self.ocr_src.get().strip()

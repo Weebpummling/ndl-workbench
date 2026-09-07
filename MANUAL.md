@@ -272,6 +272,15 @@ output both appear in the log pane.
 NDLOCR-Lite writes `.txt`, `.json` and `.xml` for each page. The app reads the
 `.txt` files, in numeric filename order, one page per frame.
 
+**A note on PDF input and NDLOCR-Lite versions.** Up to and including 1.2.3, a
+multi-page PDF passed with `--sourcepdf` produced a *single* `.txt` for the whole
+document, so the whole PDF arrived here as one frame. From **1.3.0 onward the
+default is one file set per page** (`<name>_00001.txt`, `<name>_00002.txt`, …),
+which is what this app has always wanted — PDFs now come in correctly paginated
+with no change on our side. If you are running an older engine, or someone has
+passed `--no-pdf-page-output`, expect a single frame and export the pages to a
+folder of images instead.
+
 ---
 
 ## 6. Settings

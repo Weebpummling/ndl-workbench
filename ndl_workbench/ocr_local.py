@@ -36,15 +36,61 @@ class Install:
 
     @property
     def usable(self) -> bool:
-        return bool(self.python and self.cli) or bool(self.gui_exe)
+        """Whether a command line can actually be built from this install.
+
+        Both halves are required. The desktop application NDL publishes on its
+        releases page is a GUI with no command line at all, so a `gui_exe` on
+        its own is not something this app can drive. Counting it as usable is
+        what produced the 9009 failure: the template filled `{python}` with a
+        bare `python`, Windows resolved that to the App Execution alias, and the
+        user got a Microsoft Store advert instead of OCR.
+        """
+        return bool(self.python and self.cli)
 
     def describe(self) -> str:
         bits = [f"root: {self.root}"]
-        bits.append(f"python: {self.python}" if self.python else "python: not found")
-        bits.append(f"cli: {self.cli}" if self.cli else "cli: not found")
+        bits.append(f"python: {self.python}" if self.python else "python: NOT FOUND")
+        bits.append(f"cli: {self.cli}" if self.cli else "cli: NOT FOUND")
         if self.gui_exe:
-            bits.append(f"gui: {self.gui_exe}")
+            bits.append(f"gui: {self.gui_exe}  (desktop app - has no command line, cannot be driven from here)")
         return "\n".join(bits)
+
+    def problem(self) -> str:
+        """Why this install cannot be run, phrased so the user can act on it."""
+        if self.usable:
+            return ""
+        if self.gui_exe and not self.cli and not self.python:
+            return (
+                f"{self.root} holds the NDLOCR-Lite desktop application. That build is a\n"
+                "GUI only - it has no command line, so this app cannot drive it.\n"
+                "\n"
+                "The Local OCR tab needs the source checkout plus a Python environment:\n"
+                "    git clone https://github.com/ndl-lab/ndlocr-lite <root>\\cli\n"
+                "    py -3.11 -m venv <root>\\venv\n"
+                "    <root>\\venv\\Scripts\\python -m pip install -r <root>\\cli\\requirements.txt\n"
+                "\n"
+                "so that both <root>\\cli\\src\\ocr.py and <root>\\venv\\Scripts\\python.exe\n"
+                "exist, then point Settings > NDLOCR-Lite folder at <root>.\n"
+                "Python 3.10 or newer is required. Keep the path free of full-width characters."
+            )
+        missing = []
+        if not self.python:
+            missing.append(
+                "a Python interpreter (looked for venv\\Scripts\\python.exe, "
+                "venv/bin/python, .venv\\Scripts\\python.exe under the root)"
+            )
+        if not self.cli:
+            missing.append(
+                "the CLI entry point (looked for cli\\src\\ocr.py, src\\ocr.py, ocr.py)"
+            )
+        return (
+            f"Found an NDLOCR-Lite folder at {self.root} but not "
+            + ", and not ".join(missing)
+            + ".\n\n"
+            + self.describe()
+            + "\n\nIf the interpreter you want lives somewhere else, replace {python} in\n"
+              "Settings > NDLOCR-Lite command with its full path."
+        )
 
 
 def candidate_roots(settings: Settings) -> list[Path]:
@@ -60,7 +106,14 @@ def candidate_roots(settings: Settings) -> list[Path]:
 
 
 def find_install(settings: Settings) -> Optional[Install]:
-    """Locate NDLOCR-Lite, or return None so the caller can explain the gap."""
+    """Locate NDLOCR-Lite, or return None so the caller can explain the gap.
+
+    A partial install must not mask a complete one further down the list. An
+    unpacked desktop app in the configured folder used to short-circuit the
+    search and hide a working checkout in %LOCALAPPDATA%, so the first *usable*
+    root wins and a partial one is only returned when nothing better exists.
+    """
+    partial: Optional[Install] = None
     for root in candidate_roots(settings):
         if not root.is_dir():
             continue
@@ -85,9 +138,11 @@ def find_install(settings: Settings) -> Optional[Install]:
             exes = sorted(win.glob("*.exe"))
             gui = exes[0] if exes else None
         install = Install(root=root, python=python, cli=cli, gui_exe=gui)
-        if install.usable or python or cli or gui:
+        if install.usable:
             return install
-    return None
+        if partial is None and (python or cli or gui):
+            partial = install
+    return partial
 
 
 def source_flag(src: Path) -> str:
@@ -103,10 +158,16 @@ def build_command(template: str, install: Install, src: Path, out_dir: Path) -> 
     """Fill the configured template.
 
     Placeholders: {python} {cli} {srcarg} {input} {output}.
+
+    Never substitutes a bare `python` for a missing interpreter: on Windows that
+    resolves to the App Execution alias, which prints a Microsoft Store advert
+    and exits 9009 - a failure that looks like NDLOCR-Lite's fault and is not.
     """
+    if not install.python or not install.cli:
+        raise RuntimeError(install.problem())
     mapping = {
-        "python": str(install.python or "python"),
-        "cli": str(install.cli or ""),
+        "python": str(install.python),
+        "cli": str(install.cli),
         "srcarg": source_flag(src),
         "input": str(src),
         "output": str(out_dir),
@@ -135,9 +196,7 @@ def run_ocr(
             + ", ".join(str(p) for p in candidate_roots(settings))
         )
     if not install.usable:
-        raise RuntimeError(
-            "Found an NDLOCR-Lite folder but not a runnable entry point.\n" + install.describe()
-        )
+        raise RuntimeError(install.problem())
 
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = build_command(settings.ndlocr_cmd, install, src, out_dir)
@@ -158,9 +217,21 @@ def run_ocr(
         log(line.rstrip())
     code = proc.wait()
     if code != 0:
+        hint = ""
+        if code == 9009:
+            hint = (
+                "\n\nExit code 9009 means Windows could not find the program at all - "
+                "nothing ran.\nIf the log above says \"Python was not found\", the command "
+                "hit the Microsoft Store\napp-execution alias instead of a real interpreter. "
+                "Put the full path to a\npython.exe into Settings > NDLOCR-Lite command in "
+                "place of {python}."
+            )
         raise RuntimeError(
-            f"NDLOCR-Lite exited with code {code}. The command template is in "
-            f"Settings > Local OCR if it needs adjusting for your install."
+            f"NDLOCR-Lite exited with code {code}.{hint}\n\n"
+            f"Command: {' '.join(cmd)}\n"
+            f"{install.describe()}\n\n"
+            "The command template is in Settings > Local OCR if it needs adjusting "
+            "for your install."
         )
     return out_dir
 

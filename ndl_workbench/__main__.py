@@ -145,9 +145,64 @@ def _selftest() -> int:
     except ImportError:
         print("anthropic NOT installed - automatic translation will be unavailable")
 
+    # Regression guard for the 9009 failure: a desktop-app-only folder used to
+    # count as usable, the template then filled {python} with a bare "python",
+    # and Windows ran the Microsoft Store alias instead of an interpreter.
+    print("OCR install logic: ", end="", flush=True)
+    try:
+        problems = []
+        with tempfile.TemporaryDirectory() as td:
+            gui_root = Path(td) / "desktop-app"
+            (gui_root / "windows").mkdir(parents=True)
+            exe = gui_root / "windows" / "ndlocr_lite_gui.exe"
+            exe.write_bytes(b"")
+            gui_only = ocr_local.Install(root=gui_root, python=None, cli=None, gui_exe=exe)
+            if gui_only.usable:
+                problems.append("GUI-only install reported usable")
+            if "desktop application" not in gui_only.problem():
+                problems.append("GUI-only install did not explain itself")
+            try:
+                ocr_local.build_command(Settings().ndlocr_cmd, gui_only, Path(td), Path(td))
+                problems.append("build_command accepted an install with no interpreter")
+            except RuntimeError:
+                pass
+
+            good_root = Path(td) / "checkout"
+            (good_root / "venv" / "Scripts").mkdir(parents=True)
+            (good_root / "venv" / "Scripts" / "python.exe").write_bytes(b"")
+            (good_root / "cli" / "src").mkdir(parents=True)
+            (good_root / "cli" / "src" / "ocr.py").write_bytes(b"")
+
+            real_roots = ocr_local.candidate_roots
+            try:
+                ocr_local.candidate_roots = lambda _s: [gui_root, good_root]
+                picked = ocr_local.find_install(settings)
+            finally:
+                ocr_local.candidate_roots = real_roots
+            if picked is None or picked.root != good_root:
+                problems.append("a partial install masked a usable one")
+            elif not picked.usable:
+                problems.append("complete checkout not recognised as usable")
+            else:
+                cmd = ocr_local.build_command(Settings().ndlocr_cmd, picked,
+                                              Path(td), Path(td) / "out")
+                if "python" in cmd[0] and not cmd[0].endswith("python.exe"):
+                    problems.append(f"bare interpreter name in command: {cmd[0]}")
+        print("OK (GUI-only rejected, checkout preferred)" if not problems
+              else "FAILED - " + "; ".join(problems))
+        ok = ok and not problems
+    except Exception as e:
+        print(f"FAILED - {e}")
+        ok = False
+
     print("NDLOCR-Lite      : ", end="")
     install = ocr_local.find_install(settings)
-    print(f"found at {install.root} (usable={install.usable})" if install else "not found (configure in Settings)")
+    if install is None:
+        print("not found (configure in Settings)")
+    elif install.usable:
+        print(f"found at {install.root} (usable)")
+    else:
+        print(f"found at {install.root} but NOT usable\n" + install.problem())
 
     print("\nSELFTEST", "PASSED" if ok else "FAILED")
     return 0 if ok else 1
