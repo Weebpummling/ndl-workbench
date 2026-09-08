@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -27,12 +28,74 @@ from .config import Settings
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".pdf"}
 
 
+def _is_store_alias(exe: Path) -> bool:
+    """Whether this is the Microsoft Store app-execution stub, not an interpreter.
+
+    Windows ships zero-byte reparse points under WindowsApps that advertise the
+    Store instead of running anything. Executing one is what produced the 9009
+    failure, so every interpreter this module accepts is checked against it.
+    """
+    try:
+        if "windowsapps" in str(exe).lower():
+            return True
+        return exe.stat().st_size == 0
+    except OSError:
+        return True
+
+
+def _usable_interpreter(exe: Path) -> bool:
+    """A real Python 3.10+ - NDLOCR-Lite's own floor."""
+    if not exe.is_file() or _is_store_alias(exe):
+        return False
+    try:
+        out = subprocess.run(
+            [str(exe), "-c", "import sys; print(sys.version_info[:2] >= (3, 10))"],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and out.stdout.strip() == "True"
+
+
+def system_python() -> Optional[Path]:
+    """An interpreter already on the machine, or None.
+
+    Only consulted when the NDLOCR-Lite folder has no environment of its own. A
+    user who already has Python does not need to build a venv just to satisfy
+    this app - they only need NDLOCR-Lite's dependencies in whichever
+    interpreter runs it.
+    """
+    seen: list[Path] = []
+    for name in ("python", "python3"):
+        found = shutil.which(name)
+        if found:
+            seen.append(Path(found))
+    try:
+        out = subprocess.run(
+            ["py", "-3", "-c", "import sys; print(sys.executable)"],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            seen.append(Path(out.stdout.strip()))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for exe in seen:
+        if _usable_interpreter(exe):
+            return exe
+    return None
+
+
 @dataclass
 class Install:
     root: Path
     python: Optional[Path]
     cli: Optional[Path]
     gui_exe: Optional[Path]
+    # "venv" when the interpreter came from an environment inside the root,
+    # "system" when it was already on the machine. Only affects what we say.
+    python_source: str = "venv"
 
     @property
     def usable(self) -> bool:
@@ -49,48 +112,108 @@ class Install:
 
     def describe(self) -> str:
         bits = [f"root: {self.root}"]
-        bits.append(f"python: {self.python}" if self.python else "python: NOT FOUND")
+        if self.python and self.python_source == "system":
+            bits.append(f"python: {self.python}  (already on this machine, not a venv)")
+        elif self.python:
+            bits.append(f"python: {self.python}")
+        else:
+            bits.append("python: NOT FOUND")
         bits.append(f"cli: {self.cli}" if self.cli else "cli: NOT FOUND")
         if self.gui_exe:
-            bits.append(f"gui: {self.gui_exe}  (desktop app - has no command line, cannot be driven from here)")
+            bits.append(f"gui: {self.gui_exe}  (desktop app - no command line)")
         return "\n".join(bits)
 
     def problem(self) -> str:
-        """Why this install cannot be run, phrased so the user can act on it."""
+        """Why this install cannot be run, phrased so the user can act on it.
+
+        Written against the real paths, never a `<root>` placeholder, and it
+        checks for a Python already on the machine before telling anyone to
+        install one - being told to install software you already have is how a
+        diagnosis loses the reader.
+        """
         if self.usable:
             return ""
-        if self.gui_exe and not self.cli and not self.python:
-            return (
-                f"{self.root} holds the NDLOCR-Lite desktop application. That build is a\n"
-                "GUI only - it has no command line, so this app cannot drive it.\n"
-                "\n"
-                "The Local OCR tab needs the source checkout plus a Python environment:\n"
-                "    git clone https://github.com/ndl-lab/ndlocr-lite <root>\\cli\n"
-                "    py -3.11 -m venv <root>\\venv\n"
-                "    <root>\\venv\\Scripts\\python -m pip install -r <root>\\cli\\requirements.txt\n"
-                "\n"
-                "so that both <root>\\cli\\src\\ocr.py and <root>\\venv\\Scripts\\python.exe\n"
-                "exist, then point Settings > NDLOCR-Lite folder at <root>.\n"
-                "Python 3.10 or newer is required. Keep the path free of full-width characters."
-            )
+        root = self.root
+        have = self.python or system_python()
+
+        if self.gui_exe and not self.cli:
+            lines = [
+                f"{root} holds the NDLOCR-Lite desktop application.",
+                "That build is a GUI only - it has no command line, so this",
+                "app cannot drive it. Leave it where it is; it is not the problem.",
+                "",
+                "What is missing is NDLOCR-Lite's source checkout. Add it:",
+                "",
+                f'  git clone https://github.com/ndl-lab/ndlocr-lite "{root}\\cli"',
+            ]
+            if have:
+                lines += [
+                    "",
+                    f"Python is already here, so no new install is needed:",
+                    f"  {have}",
+                    "",
+                    "Recommended - keep NDLOCR-Lite's pinned numpy and onnxruntime",
+                    "out of that interpreter by giving it its own environment:",
+                    "",
+                    f'  "{have}" -m venv "{root}\\venv"',
+                    f'  "{root}\\venv\\Scripts\\python" -m pip install -r "{root}\\cli\\requirements.txt"',
+                    "",
+                    "Or, to use the Python you already have and skip the venv:",
+                    "",
+                    f'  "{have}" -m pip install -r "{root}\\cli\\requirements.txt"',
+                    "",
+                    "then put that interpreter's full path in place of {python} in",
+                    "Settings > NDLOCR-Lite command.",
+                ]
+            else:
+                lines += [
+                    "",
+                    "No usable Python was found on this machine either. Install",
+                    "Python 3.10 or newer from python.org - not the Microsoft Store",
+                    "stub - then:",
+                    "",
+                    f'  py -3 -m venv "{root}\\venv"',
+                    f'  "{root}\\venv\\Scripts\\python" -m pip install -r "{root}\\cli\\requirements.txt"',
+                ]
+            lines += [
+                "",
+                f"Either way this app needs {root}\\cli\\src\\ocr.py to exist.",
+                "Keep the path free of full-width characters.",
+            ]
+            return "\n".join(lines)
+
         missing = []
         if not self.python:
             missing.append(
                 "a Python interpreter (looked for venv\\Scripts\\python.exe, "
-                "venv/bin/python, .venv\\Scripts\\python.exe under the root)"
+                "venv/bin/python and .venv\\Scripts\\python.exe under the root, "
+                "then for one already on this machine)"
             )
         if not self.cli:
             missing.append(
                 "the CLI entry point (looked for cli\\src\\ocr.py, src\\ocr.py, ocr.py)"
             )
-        return (
-            f"Found an NDLOCR-Lite folder at {self.root} but not "
-            + ", and not ".join(missing)
-            + ".\n\n"
-            + self.describe()
-            + "\n\nIf the interpreter you want lives somewhere else, replace {python} in\n"
-              "Settings > NDLOCR-Lite command with its full path."
-        )
+        out = [
+            f"Found an NDLOCR-Lite folder at {root} but not "
+            + ", and not ".join(missing) + ".",
+            "",
+            self.describe(),
+        ]
+        if have and not self.cli:
+            out += [
+                "",
+                f"Python itself is fine ({have}); it is the checkout that is missing:",
+                "",
+                f'  git clone https://github.com/ndl-lab/ndlocr-lite "{root}\\cli"',
+                f'  "{have}" -m pip install -r "{root}\\cli\\requirements.txt"',
+            ]
+        else:
+            out += [
+                "",
+                "If the interpreter you want lives somewhere else, replace {python}",
+                "in Settings > NDLOCR-Lite command with its full path.",
+            ]
+        return "\n".join(out)
 
 
 def candidate_roots(settings: Settings) -> list[Path]:
@@ -132,17 +255,189 @@ def find_install(settings: Settings) -> Optional[Install]:
             if p.is_file():
                 cli = p
                 break
+        # A checkout with its dependencies installed into the machine's own
+        # Python is a perfectly good install; requiring a venv would refuse to
+        # run for someone who already has everything NDLOCR-Lite needs.
+        python_source = "venv"
+        if python is None and cli is not None:
+            fallback = system_python()
+            if fallback is not None:
+                python, python_source = fallback, "system"
         gui = None
         win = root / "windows"
         if win.is_dir():
             exes = sorted(win.glob("*.exe"))
             gui = exes[0] if exes else None
-        install = Install(root=root, python=python, cli=cli, gui_exe=gui)
+        install = Install(root=root, python=python, cli=cli, gui_exe=gui,
+                          python_source=python_source)
         if install.usable:
             return install
         if partial is None and (python or cli or gui):
             partial = install
     return partial
+
+
+# --------------------------------------------------------------------------
+# installing NDLOCR-Lite
+# --------------------------------------------------------------------------
+
+NDLOCR_REPO = "https://github.com/ndl-lab/ndlocr-lite"
+NDLOCR_RELEASE_API = "https://api.github.com/repos/ndl-lab/ndlocr-lite/releases/latest"
+
+# Used when the release list cannot be reached. Deliberately a tag and never a
+# branch: upstream cuts its releases from a side branch, so `master` trails the
+# newest tag by weeks and a clone of it silently installs older code.
+NDLOCR_FALLBACK_TAG = "1.3.1"
+
+
+def _stream(cmd: list[str], *, cwd: Optional[Path], log: Callable[[str], None],
+            what: str) -> None:
+    """Run a command, echo it into the log, raise with its tail if it fails."""
+    log("$ " + " ".join(cmd))
+    proc = subprocess.Popen(
+        cmd, cwd=str(cwd) if cwd else None,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert proc.stdout is not None
+    tail: list[str] = []
+    for line in proc.stdout:
+        line = line.rstrip()
+        log(line)
+        tail = (tail + [line])[-12:]
+    if proc.wait() != 0:
+        raise RuntimeError(f"{what} failed:\n" + "\n".join(tail))
+
+
+def latest_release_tag(log: Callable[[str], None] = lambda _m: None) -> str:
+    """The newest published NDLOCR-Lite tag, or the pinned fallback."""
+    import json
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(
+            NDLOCR_RELEASE_API,
+            headers={"User-Agent": "ndl-workbench", "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            tag = (json.load(r) or {}).get("tag_name")
+        if tag:
+            log(f"newest NDLOCR-Lite release: {tag}")
+            return str(tag)
+    except Exception as e:
+        log(f"could not reach the release list ({e}); using {NDLOCR_FALLBACK_TAG}")
+    return NDLOCR_FALLBACK_TAG
+
+
+def _fetch_source(cli_dir: Path, tag: str, log: Callable[[str], None]) -> None:
+    """Put the NDLOCR-Lite checkout at `cli_dir`, by git if available or by zip.
+
+    The download is about 300 MB by git or 150 MB as a zip: nearly all of it is
+    the four ONNX models, which ship inside the repository rather than being
+    fetched at run time. That is the whole reason the desktop application cannot stand in for
+    this - it has the models but no command line.
+    """
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    cli_dir.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which("git"):
+        log(f"cloning {NDLOCR_REPO} at tag {tag} (about 300 MB)")
+        _stream(["git", "clone", "--depth", "1", "--branch", tag, NDLOCR_REPO, str(cli_dir)],
+                cwd=None, log=log, what="git clone")
+        return
+
+    log("git is not installed; downloading the source archive instead (about 150 MB)")
+    url = f"{NDLOCR_REPO}/archive/refs/tags/{tag}.zip"
+    with tempfile.TemporaryDirectory() as td:
+        archive = Path(td) / "ndlocr-lite.zip"
+        req = urllib.request.Request(url, headers={"User-Agent": "ndl-workbench"})
+        with urllib.request.urlopen(req, timeout=120) as r, open(archive, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            done = next_mark = 0
+            while True:
+                block = r.read(1 << 20)
+                if not block:
+                    break
+                f.write(block)
+                done += len(block)
+                if done >= next_mark:
+                    log(f"  {done // (1 << 20)} MB"
+                        + (f" of {total // (1 << 20)} MB" if total else ""))
+                    next_mark = done + (25 << 20)
+        log(f"extracting {archive.name}")
+        with zipfile.ZipFile(archive) as z:
+            z.extractall(td)
+        inner = [p for p in Path(td).iterdir() if p.is_dir() and p.name.startswith("ndlocr-lite")]
+        if not inner:
+            raise RuntimeError("the downloaded archive did not contain a checkout")
+        shutil.move(str(inner[0]), str(cli_dir))
+
+
+def install(root: Path, *, python: Optional[Path] = None,
+            log: Callable[[str], None] = lambda _m: None) -> Install:
+    """Install NDLOCR-Lite under `root` so the Local OCR tab can drive it.
+
+    Creates `<root>\\cli` (the checkout, models included) and `<root>\\venv`
+    (its dependencies), which is exactly what `find_install` looks for. Both
+    steps are skipped if already present, so this is safe to run again after a
+    failure part-way through.
+    """
+    interpreter = python or system_python()
+    if interpreter is None:
+        raise RuntimeError(
+            "No usable Python was found on this machine.\n\n"
+            "Install Python 3.10 or newer from python.org - not the Microsoft\n"
+            "Store version, whose stub is what produces \"Python was not found\" -\n"
+            "then run this again."
+        )
+    log(f"using {interpreter}")
+
+    root.mkdir(parents=True, exist_ok=True)
+    cli_dir = root / "cli"
+    if (cli_dir / "src" / "ocr.py").is_file():
+        log(f"checkout already present at {cli_dir}")
+    elif cli_dir.exists() and any(cli_dir.iterdir()):
+        raise RuntimeError(
+            f"{cli_dir} already exists but has no src\\ocr.py in it.\n"
+            "Move or delete that folder and run this again."
+        )
+    else:
+        _fetch_source(cli_dir, latest_release_tag(log), log)
+
+    requirements = cli_dir / "requirements.txt"
+    if not requirements.is_file():
+        raise RuntimeError(f"no requirements.txt under {cli_dir}")
+
+    venv_python = root / "venv" / "Scripts" / "python.exe"
+    if not venv_python.is_file():
+        venv_python = root / "venv" / "bin" / "python"
+    if venv_python.is_file():
+        log(f"environment already present at {root / 'venv'}")
+    else:
+        log(f"creating the environment at {root / 'venv'}")
+        _stream([str(interpreter), "-m", "venv", str(root / "venv")],
+                cwd=None, log=log, what="venv creation")
+        venv_python = root / "venv" / "Scripts" / "python.exe"
+        if not venv_python.is_file():
+            venv_python = root / "venv" / "bin" / "python"
+
+    log("installing dependencies (a few hundred MB, this is the slow part)")
+    _stream([str(venv_python), "-m", "pip", "install", "--upgrade", "pip", "--quiet"],
+            cwd=None, log=log, what="pip upgrade")
+    _stream([str(venv_python), "-m", "pip", "install", "-r", str(requirements)],
+            cwd=None, log=log, what="dependency install")
+
+    log("verifying")
+    _stream([str(venv_python), str(cli_dir / "src" / "ocr.py"), "--version"],
+            cwd=cli_dir / "src", log=log, what="verification")
+
+    result = Install(root=root, python=venv_python, cli=cli_dir / "src" / "ocr.py",
+                     gui_exe=None, python_source="venv")
+    log("NDLOCR-Lite is installed and runnable:\n" + result.describe())
+    return result
 
 
 def source_flag(src: Path) -> str:

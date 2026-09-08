@@ -159,8 +159,13 @@ def _selftest() -> int:
             gui_only = ocr_local.Install(root=gui_root, python=None, cli=None, gui_exe=exe)
             if gui_only.usable:
                 problems.append("GUI-only install reported usable")
-            if "desktop application" not in gui_only.problem():
+            explanation = gui_only.problem()
+            if "desktop application" not in explanation:
                 problems.append("GUI-only install did not explain itself")
+            if "<root>" in explanation:
+                problems.append("diagnosis printed a <root> placeholder")
+            if str(gui_root) not in explanation:
+                problems.append("diagnosis did not name the actual folder")
             try:
                 ocr_local.build_command(Settings().ndlocr_cmd, gui_only, Path(td), Path(td))
                 problems.append("build_command accepted an install with no interpreter")
@@ -188,6 +193,31 @@ def _selftest() -> int:
                                               Path(td), Path(td) / "out")
                 if "python" in cmd[0] and not cmd[0].endswith("python.exe"):
                     problems.append(f"bare interpreter name in command: {cmd[0]}")
+
+            # A checkout with no venv is still usable when the machine has a
+            # real Python: nobody should be told to install what they have.
+            sysroot = Path(td) / "checkout-no-venv"
+            (sysroot / "cli" / "src").mkdir(parents=True)
+            (sysroot / "cli" / "src" / "ocr.py").write_bytes(b"")
+            have = ocr_local.system_python()
+            try:
+                ocr_local.candidate_roots = lambda _s: [sysroot]
+                bare = ocr_local.find_install(settings)
+            finally:
+                ocr_local.candidate_roots = real_roots
+            if have is None:
+                print("(no system Python found; venv-less case not exercised) ", end="")
+            elif bare is None or not bare.usable:
+                problems.append("checkout + system Python not accepted")
+            elif bare.python_source != "system":
+                problems.append("system interpreter not labelled as such")
+            elif ocr_local._is_store_alias(bare.python):
+                problems.append("picked up the Microsoft Store stub as an interpreter")
+
+            # The installer must pin a tag. Upstream cuts releases from a side
+            # branch, so cloning master quietly installs weeks-old code.
+            if ocr_local.NDLOCR_FALLBACK_TAG in ("master", "main", "HEAD"):
+                problems.append("installer fallback points at a branch, not a tag")
         print("OK (GUI-only rejected, checkout preferred)" if not problems
               else "FAILED - " + "; ".join(problems))
         ok = ok and not problems

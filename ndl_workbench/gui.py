@@ -252,6 +252,7 @@ class Workbench(Tk):
         ttk.Button(f2, text="Run OCR", command=self.on_run_ocr).pack(side=LEFT)
         ttk.Button(f2, text="Import existing OCR text…", command=self.on_import_ocr).pack(side=LEFT, padx=6)
         ttk.Button(f2, text="Check NDLOCR-Lite install", command=self.on_check_ocr).pack(side=LEFT)
+        ttk.Button(f2, text="Install NDLOCR-Lite…", command=self.on_install_ocr).pack(side=LEFT, padx=6)
 
     def _tab_settings(self) -> None:
         tab = ttk.Frame(self.nb, padding=8)
@@ -600,6 +601,46 @@ class Workbench(Tk):
                                         Path("<input>"), Path("<output>"))))
         else:
             self.log("usable: NO\n" + install.problem())
+
+    def _ocr_install_root(self) -> Path:
+        """Where Install NDLOCR-Lite… will put things.
+
+        The configured folder if there is one - so a user who already unpacked
+        the desktop application gets the checkout beside it - and otherwise the
+        first place auto-detection looks.
+        """
+        if self.settings.ndlocr_dir.strip():
+            return Path(self.settings.ndlocr_dir.strip())
+        return ocr_local.candidate_roots(self.settings)[0]
+
+    def on_install_ocr(self) -> None:
+        root = self._ocr_install_root()
+        have = ocr_local.system_python()
+        detail = (f"Python: {have}" if have else
+                  "No Python was found. This needs Python 3.10 or newer from "
+                  "python.org first - the Microsoft Store stub will not do.")
+        if not messagebox.askokcancel(
+            APP_NAME,
+            "Install NDLOCR-Lite for the Local OCR tab?\n\n"
+            f"Into: {root}\n"
+            f"  {root / 'cli'}   the checkout, models included\n"
+            f"  {root / 'venv'}  its dependencies\n\n"
+            "This downloads 150-300 MB of OCR models and installs a few hundred MB "
+            "of dependencies, "
+            "so it takes a while. Progress appears in the log below.\n\n"
+            + detail,
+        ):
+            return
+        self._run(self._install_ocr, root)
+
+    def _install_ocr(self, root: Path) -> None:
+        install = ocr_local.install(root, log=self.log)
+        self.log("Local OCR is ready. Choose your images above and press Run OCR.")
+        if not self.settings.ndlocr_dir.strip() and install.root != \
+                ocr_local.candidate_roots(self.settings)[0]:
+            self.settings.ndlocr_dir = str(install.root)
+            self.settings.save()
+            self.log(f"saved Settings > NDLOCR-Lite folder = {install.root}")
 
     def on_run_ocr(self) -> None:
         src = self.ocr_src.get().strip()

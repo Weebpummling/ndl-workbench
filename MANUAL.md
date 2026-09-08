@@ -221,7 +221,8 @@ and read them locally:
 1. **Local OCR** tab → choose the image file or folder → set a job name.
 2. **Check NDLOCR-Lite install** first if you have not used it before. The app
    looks in `%LOCALAPPDATA%\ndlocr-lite`, your home folder and `C:\ndlocr-lite`;
-   point **Settings → NDLOCR-Lite folder** at it if it lives elsewhere.
+   point **Settings → NDLOCR-Lite folder** at it if it lives elsewhere. If it is
+   not there at all, **Install NDLOCR-Lite…** fetches and sets it up for you.
 3. **Run OCR**. Output goes to `<data home>\manuals\local-<job>\`.
 4. The result is folded into the same per-frame transcription and chunk files
    the online path produces, so translation and rendering work on it unchanged.
@@ -237,22 +238,32 @@ NDLOCR-Lite is the National Diet Library's own OCR, published at
 It runs on the CPU — around a second a page on an ordinary laptop — and the
 models ship inside the repository, so there is no separate model download.
 
-Install it where the app already looks, in its own virtual environment so it
-cannot disturb any other Python on the machine:
+**Press `Install NDLOCR-Lite…`.** It finds your Python, fetches the newest
+release into `<folder>\cli` (git if you have it, a zip if not), builds
+`<folder>\venv`, installs the requirements and checks it runs. `<folder>` is
+**Settings → NDLOCR-Lite folder**, or `%LOCALAPPDATA%\ndlocr-lite` if blank.
+
+Needs Python 3.10+ from python.org — the Microsoft Store stub is not an
+interpreter. About 1.5 GB and a few minutes. Safe to re-run; finished steps are
+skipped.
+
+By hand instead:
 
 ```
-git clone --depth 1 https://github.com/ndl-lab/ndlocr-lite "%LOCALAPPDATA%\ndlocr-lite\cli"
+git clone --depth 1 --branch 1.3.1 https://github.com/ndl-lab/ndlocr-lite "%LOCALAPPDATA%\ndlocr-lite\cli"
 python -m venv "%LOCALAPPDATA%\ndlocr-lite\venv"
 "%LOCALAPPDATA%\ndlocr-lite\venv\Scripts\python.exe" -m pip install -r "%LOCALAPPDATA%\ndlocr-lite\cli\requirements.txt"
 ```
 
-It needs Python 3.10 or newer, and about 1.5 GB on disk once the dependencies
-are in. Then press **Check NDLOCR-Lite install**: it should report the venv
-interpreter and `cli\src\ocr.py`.
+Clone a **tag**, not `master` — NDL cut releases from a side branch, so `master`
+runs weeks behind.
 
-NDL also publish a standalone Windows build on their releases page if you would
-rather not keep a Python environment around; the app can drive that instead via
-the command setting below.
+The venv is optional. If NDLOCR-Lite's dependencies are already in a Python on
+your PATH, the app will use that.
+
+> NDL's standalone Windows build **will not work here** — it is a GUI with no
+> command line. (Earlier versions of this manual said otherwise.) Install it as
+> well if you like, and put the checkout beside it.
 
 ### The command template
 
