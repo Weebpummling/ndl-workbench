@@ -177,6 +177,31 @@ def reflow(lines: list[Line]) -> list[str]:
     return out
 
 
+def dedupe(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop entries NDL repeated verbatim - same text, same four coordinates.
+
+    NDL's coordjson lists some lines twice. It is not rare: 2.7% of lines in pid
+    843085 across 97 frames, 4.5% in pid 1457899 across 113. Every consumer that
+    concatenates lines doubles that text, so it reached the transcription, the
+    reading text, the chunks sent to a translator and the DOCX.
+
+    Two boxes at identical coordinates cannot be two things on the page, so this
+    removes a serialization artefact rather than judging the text. A line that
+    genuinely repeats - a ditto column, a running head - has a different box and
+    survives.
+    """
+    seen: set[tuple] = set()
+    out = []
+    for line in raw:
+        key = (str(line.get("contenttext", "")), line.get("xmin"),
+               line.get("ymin"), line.get("xmax"), line.get("ymax"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+    return out
+
+
 def frame_reading_text(entry: dict[str, Any]) -> tuple[list[str], int, int]:
     """Reading text for one frame: (paragraphs, body_lines, ruby_lines)."""
     coord = entry.get("coordjson")
@@ -187,7 +212,7 @@ def frame_reading_text(entry: dict[str, Any]) -> tuple[list[str], int, int]:
         raw = json.loads(coord)
     except ValueError:
         return [], 0, 0
-    lines = classify(raw)
+    lines = classify(dedupe(raw))
     ruby = sum(1 for l in lines if l.is_ruby)
     body = sum(1 for l in lines if l.text.strip() and not l.is_ruby)
     return reflow(lines), body, ruby
