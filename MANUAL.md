@@ -243,20 +243,26 @@ release into `<folder>\cli` (git if you have it, a zip if not), builds
 `<folder>\venv`, installs the requirements and checks it runs. `<folder>` is
 **Settings → NDLOCR-Lite folder**, or `%LOCALAPPDATA%\ndlocr-lite` if blank.
 
-Needs Python 3.10+ from python.org — the Microsoft Store stub is not an
-interpreter. About 1.5 GB and a few minutes. Safe to re-run; finished steps are
-skipped.
+Needs **Python 3.10–3.13 (64-bit)** from python.org. **3.14 will not do**:
+NDLOCR-Lite pins packages that have no prebuilt wheels for it, and compiling
+them fails on an ordinary PC. The installer checks this before downloading
+anything and names the version to install; if several Pythons are present it
+picks a supported one itself. The Microsoft Store stub is not an interpreter.
+About 1.5 GB and a few minutes. Safe to re-run; finished steps are skipped.
 
 By hand instead:
 
 ```
 git clone --depth 1 --branch 1.3.1 https://github.com/ndl-lab/ndlocr-lite "%LOCALAPPDATA%\ndlocr-lite\cli"
-python -m venv "%LOCALAPPDATA%\ndlocr-lite\venv"
-"%LOCALAPPDATA%\ndlocr-lite\venv\Scripts\python.exe" -m pip install -r "%LOCALAPPDATA%\ndlocr-lite\cli\requirements.txt"
+py -3.13 -m venv "%LOCALAPPDATA%\ndlocr-lite\venv"
+"%LOCALAPPDATA%\ndlocr-lite\venv\Scripts\python.exe" -m pip install --only-binary=:all: --no-binary PyYAML -r "%LOCALAPPDATA%\ndlocr-lite\cli\requirements.txt"
 ```
 
 Clone a **tag**, not `master` — NDL cut releases from a side branch, so `master`
 runs weeks behind.
+
+`--only-binary=:all:` makes pip refuse to compile anything instead of failing
+minutes later; PyYAML is the one pin that builds fine from source.
 
 The venv is optional. If NDLOCR-Lite's dependencies are already in a Python on
 your PATH, the app will use that.
@@ -325,6 +331,10 @@ worth knowing about:
 ---
 
 ## 8. Troubleshooting
+
+**"Could not find a version that satisfies the requirement numpy==2.2.2"** (or
+`lxml==5.4.0`) when installing NDLOCR-Lite — your Python is 3.14. Install 3.13
+from python.org and press Install again. §5.
 
 **"This PID is not allowed"** — restricted item. §5.
 

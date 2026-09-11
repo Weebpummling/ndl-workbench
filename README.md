@@ -163,8 +163,9 @@ read them locally. The **Local OCR** tab drives
 shape as the online path, so translation and rendering work on it unchanged.
 
 NDLOCR-Lite is **not bundled** — it is NDL's software under its own licence.
-**Install NDLOCR-Lite…** in that tab fetches and sets it up for you;
-[MANUAL.md](MANUAL.md) §5 has the manual commands. NDL's standalone Windows
+**Install NDLOCR-Lite…** in that tab fetches and sets it up for you; it needs
+Python 3.10–3.13 on the machine (3.14 cannot install NDLOCR-Lite's pinned
+packages). [MANUAL.md](MANUAL.md) §5 has the manual commands. NDL's standalone Windows
 build is a GUI with no command line and cannot be driven from here.
 
 ## Build from source

@@ -218,7 +218,45 @@ def _selftest() -> int:
             # branch, so cloning master quietly installs weeks-old code.
             if ocr_local.NDLOCR_FALLBACK_TAG in ("master", "main", "HEAD"):
                 problems.append("installer fallback points at a branch, not a tag")
-        print("OK (GUI-only rejected, checkout preferred)" if not problems
+
+            # Interpreter choice: the pins only have wheels up to
+            # NDLOCR_PYTHON_MAX, so a supported Python must beat a newer one
+            # even when the newer one is first on PATH, and a too-old one
+            # must never be picked.
+            if not (ocr_local.NDLOCR_PYTHON_MIN <= ocr_local.NDLOCR_PYTHON_MAX):
+                problems.append("NDLOCR_PYTHON_MIN is above NDLOCR_PYTHON_MAX")
+            newer = Path(td) / "py-newer" / "python.exe"
+            good = Path(td) / "py-good" / "python.exe"
+            old = Path(td) / "py-old" / "python.exe"
+            hi_major, hi_minor = ocr_local.NDLOCR_PYTHON_MAX
+            fake = {newer: (hi_major, hi_minor + 2), good: ocr_local.NDLOCR_PYTHON_MAX,
+                    old: (3, ocr_local.NDLOCR_PYTHON_MIN[1] - 1)}
+            real_cands, real_ver = ocr_local.python_candidates, ocr_local.python_version
+            try:
+                ocr_local.python_candidates = lambda: [newer, old, good]
+                ocr_local.python_version = lambda p: fake.get(p)
+                pick = ocr_local.system_python()
+                ocr_local.python_candidates = lambda: [newer, old]
+                only_newer = ocr_local.system_python()
+            finally:
+                ocr_local.python_candidates, ocr_local.python_version = real_cands, real_ver
+            if pick != good:
+                problems.append(f"interpreter ranking chose {pick} over the supported one")
+            if only_newer != newer:
+                problems.append("a newer-than-supported Python was not offered when it was the only one")
+            if not getattr(sys, "frozen", False):
+                mine = ocr_local.python_version(Path(sys.executable))
+                if mine != tuple(sys.version_info[:2]):
+                    problems.append(f"python_version misread the running interpreter as {mine}")
+            # pip's "no wheel" line must yield the package name, or the
+            # pure-Python exemption never engages and 3.13 is refused.
+            m = ocr_local._UNSATISFIED.search(
+                "ERROR: Could not find a version that satisfies the requirement PyYAML==6.0.1 (from versions: 6.0.2)")
+            if not m or m.group(1) != "PyYAML":
+                problems.append("unsatisfied-requirement pattern did not extract the package name")
+            if ocr_local._pip_flags(["PyYAML"]) != ["--only-binary=:all:", "--no-binary", "PyYAML"]:
+                problems.append("pip flags do not restrict to wheels with the pure-Python exemption")
+        print("OK (GUI-only rejected, checkout preferred, supported Python ranked first)" if not problems
               else "FAILED - " + "; ".join(problems))
         ok = ok and not problems
     except Exception as e:

@@ -616,9 +616,18 @@ class Workbench(Tk):
     def on_install_ocr(self) -> None:
         root = self._ocr_install_root()
         have = ocr_local.system_python()
-        detail = (f"Python: {have}" if have else
-                  "No Python was found. This needs Python 3.10 or newer from "
-                  "python.org first - the Microsoft Store stub will not do.")
+        lo, hi = (ocr_local._fmt_version(ocr_local.NDLOCR_PYTHON_MIN),
+                  ocr_local._fmt_version(ocr_local.NDLOCR_PYTHON_MAX))
+        if have:
+            ver = ocr_local.python_version(have)
+            detail = f"Python: {have}" + (f"  ({ocr_local._fmt_version(ver)})" if ver else "")
+            if ver and not ocr_local.supported_python(ver):
+                detail += (f"\n\nNDLOCR-Lite's packages are published for Python {lo}-{hi}. "
+                           f"{ocr_local._fmt_version(ver)} is the only Python here, so the install "
+                           "will check it first and stop before downloading anything if it cannot work.")
+        else:
+            detail = (f"No Python was found. This needs Python {lo}-{hi} (64-bit) from "
+                      "python.org first - the Microsoft Store stub will not do.")
         if not messagebox.askokcancel(
             APP_NAME,
             "Install NDLOCR-Lite for the Local OCR tab?\n\n"
