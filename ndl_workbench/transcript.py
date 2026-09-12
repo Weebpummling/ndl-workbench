@@ -240,6 +240,11 @@ def _frame_lines(entry: dict[str, Any]) -> list[str]:
     The "no OCR text" placeholder is only for a frame NDL returned no coordinate
     data for at all, which is what the PowerShell script does; keeping the two
     identical means either tool can produce a given volume's transcription.
+
+    Entries NDL repeated verbatim are dropped - see `reflow.dedupe` - exactly as
+    `ndl_fulltext_pull.ps1` drops them, so the two tools still produce the same
+    transcription. A line the page does not carry twice was never part of the
+    mirror of the scan.
     """
     coord = entry.get("coordjson")
     if not coord or coord == "null":
@@ -248,7 +253,8 @@ def _frame_lines(entry: dict[str, Any]) -> list[str]:
             return [str(contents)]
         return ["(no OCR text on this frame)"]
     try:
-        return [str(l.get("contenttext", "")) for l in json.loads(coord)]
+        return [str(l.get("contenttext", ""))
+                for l in reflow.dedupe(json.loads(coord))]
     except (ValueError, AttributeError):
         return []
 

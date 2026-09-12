@@ -88,8 +88,20 @@ def _selftest() -> int:
             problems.append("ruby text leaked into the output")
         if paragraphs != ["軍人ハ忠節ヲ盡スヲ本分トスベシ。", "忠義ノ心ヲ以テ務メヲ盡スベシ。"]:
             problems.append(f"sentences not rejoined: {paragraphs}")
-        print("OK (ruby dropped, wrapped lines rejoined)" if not problems
-              else "FAILED - " + "; ".join(problems))
+
+        # NDL repeats some coordjson entries verbatim; anything that joins the
+        # lines doubles that text. A genuine repeat sits at a different box and
+        # must survive, so both halves are checked.
+        doubled = json.loads(entry["coordjson"])
+        entry2 = {"coordjson": json.dumps(doubled + doubled[:2])}
+        if "".join(reflow.frame_reading_text(entry2)[0]) != joined:
+            problems.append("duplicate coordjson entries changed the reading text")
+        elsewhere = dict(doubled[1], xmin=100, xmax=210)
+        if len(reflow.dedupe(doubled + [elsewhere])) != len(doubled) + 1:
+            problems.append("a real repeat at a different box was discarded")
+
+        print("OK (ruby dropped, wrapped lines rejoined, duplicates collapsed)"
+              if not problems else "FAILED - " + "; ".join(problems))
         ok = ok and not problems
     except Exception as e:
         print(f"FAILED - {e}")
